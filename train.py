@@ -59,7 +59,7 @@ def training(dataset, opt, pipe, prune, testing_iterations, saving_iterations, c
                 net_image_bytes = None
                 custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
                 if custom_cam != None:
-                    net_image = render(custom_cam, gaussians, pipe, background, scaling_modifer)["render"]
+                    net_image = render(custom_cam, gaussians, pipe, background, prune.use_mask, scaling_modifer)["render"]
                     net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
                 network_gui.send(net_image_bytes, dataset.source_path)
                 if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
@@ -86,7 +86,9 @@ def training(dataset, opt, pipe, prune, testing_iterations, saving_iterations, c
 
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
+        if iteration == opt.densify_until_iter+1:
+            gaussians.set_trainable_mask(opt)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, (iteration>opt.densify_until_iter) and prune.use_mask)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
         # Loss
@@ -107,7 +109,7 @@ def training(dataset, opt, pipe, prune, testing_iterations, saving_iterations, c
                 progress_bar.close()
 
             # Log and save
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
+            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, (iteration>opt.densify_until_iter) and prune.use_mask))
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
@@ -194,6 +196,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
         torch.cuda.empty_cache()
 
 if __name__ == "__main__":
+    #Set up config file
     config_path = sys.argv[sys.argv.index("--config")+1] if "--config" in sys.argv else None
     if config_path:
         with open(config_path) as f:
@@ -208,6 +211,7 @@ if __name__ == "__main__":
     op = OptimizationParams(parser, config['opt_params'])
     pp = PipelineParams(parser, config['pipe_params'])
     pr = PruneParams(parser, config['prune_params'])
+    parser.add_argument('--config', type=str, default=None)
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)

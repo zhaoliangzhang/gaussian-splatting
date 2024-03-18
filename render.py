@@ -24,7 +24,7 @@ import sys
 from collections import defaultdict
 import yaml
 
-def render_set(model_path, name, iteration, views, gaussians, pipeline, background):
+def render_set(model_path, use_mask, name, iteration, views, gaussians, pipeline, background):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
 
@@ -32,7 +32,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     makedirs(gts_path, exist_ok=True)
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
-        rendering = render(view, gaussians, pipeline, background)["render"]
+        rendering = render(view, gaussians, pipeline, background, use_mask)["render"]
         gt = view.original_image[0:3, :, :]
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
@@ -46,10 +46,10 @@ def render_sets(dataset : ModelParams, prune, iteration : int, pipeline : Pipeli
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
         if not skip_train:
-             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background)
+             render_set(dataset.model_path, prune.use_mask, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background)
 
         if not skip_test:
-             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background)
+             render_set(dataset.model_path, prune.use_mask, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background)
 
 if __name__ == "__main__":
     config_path = sys.argv[sys.argv.index("--config")+1] if "--config" in sys.argv else None
@@ -65,6 +65,7 @@ if __name__ == "__main__":
     model = ModelParams(parser, config['model_params'])
     pipeline = PipelineParams(parser, config['pipe_params'])
     pr = PruneParams(parser, config['prune_params'])
+    parser.add_argument('--config', type=str, default=None)
     parser.add_argument("--iteration", default=-1, type=int)
     parser.add_argument("--skip_train", action="store_true")
     parser.add_argument("--skip_test", action="store_true")
