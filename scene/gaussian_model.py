@@ -20,10 +20,11 @@ from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
+from utils.prune_utils import _gumbel_sigmoid
 
 class GaussianModel:
 
-    def setup_functions(self):
+    def setup_functions(self, dataset, prune):
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
             L = build_scaling_rotation(scaling_modifier * scaling, rotation)
             actual_covariance = L @ L.transpose(1, 2)
@@ -35,15 +36,23 @@ class GaussianModel:
 
         self.covariance_activation = build_covariance_from_scaling_rotation
 
-        self.opacity_activation = torch.sigmoid
-        self.inverse_opacity_activation = inverse_sigmoid
+        if dataset.opacity_activation == "gumble_sigmoid":
+            self.opacity_activation = _gumbel_sigmoid
+        else:
+            self.opacity_activation = torch.sigmoid
+            self.inverse_opacity_activation = inverse_sigmoid
+
+        if prune.mask_activation == "sigmoid":
+            self.mask_activation = torch.sigmoid
+        elif prune.mask_activation == "gumbel_sigmoid":
+            self.mask_activation = _gumbel_sigmoid
 
         self.rotation_activation = torch.nn.functional.normalize
 
 
-    def __init__(self, sh_degree : int):
+    def __init__(self, dataset, prune):
         self.active_sh_degree = 0
-        self.max_sh_degree = sh_degree  
+        self.max_sh_degree = dataset.sh_degree  
         self._xyz = torch.empty(0)
         self._features_dc = torch.empty(0)
         self._features_rest = torch.empty(0)
@@ -56,7 +65,7 @@ class GaussianModel:
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
-        self.setup_functions()
+        self.setup_functions(dataset, prune)
 
     def capture(self):
         return (

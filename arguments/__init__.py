@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -13,11 +13,13 @@ from argparse import ArgumentParser, Namespace
 import sys
 import os
 
+
 class GroupParams:
     pass
 
+
 class ParamGroup:
-    def __init__(self, parser: ArgumentParser, name : str, fill_none = False):
+    def __init__(self, parser: ArgumentParser, config: dict, name : str, fill_none = False):
         group = parser.add_argument_group(name)
         for key, value in vars(self).items():
             shorthand = False
@@ -25,6 +27,10 @@ class ParamGroup:
                 shorthand = True
                 key = key[1:]
             t = type(value)
+            if key in config:
+                value = config[key]
+            elif key.startswith("_") and key[1:] in config:
+                value = config[key[1:]]
             value = value if not fill_none else None 
             if shorthand:
                 if t == bool:
@@ -34,19 +40,24 @@ class ParamGroup:
             else:
                 if t == bool:
                     group.add_argument("--" + key, default=value, action="store_true")
+                elif t == list:
+                    group.add_argument("--" + key, default=value, nargs="+", type=type(value[0]))
                 else:
                     group.add_argument("--" + key, default=value, type=t)
 
     def extract(self, args):
         group = GroupParams()
+
         for arg in vars(args).items():
             if arg[0] in vars(self) or ("_" + arg[0]) in vars(self):
                 setattr(group, arg[0], arg[1])
         return group
 
-class ModelParams(ParamGroup): 
-    def __init__(self, parser, sentinel=False):
+
+class ModelParams(ParamGroup):
+    def __init__(self, parser, config, sentinel=False):
         self.sh_degree = 3
+        self.opacity_activation = "gumble_sigmoid"
         self._source_path = ""
         self._model_path = ""
         self._images = "images"
@@ -54,22 +65,36 @@ class ModelParams(ParamGroup):
         self._white_background = False
         self.data_device = "cuda"
         self.eval = False
-        super().__init__(parser, "Loading Parameters", sentinel)
+        self.log_interval = 100
+
+        self.use_wandb = True
+        self.wandb_project = "lightgaussian"
+        self.wandb_entity = "zhaoliangzhang"
+        self.wandb_run_name = "test-run"
+        self.wandb_group = "baseline"
+        self.wandb_mode = "online"
+        self.wandb_log_images = False
+        self.wandb_tags = ""
+
+        self.testing_interval = 100
+        super().__init__(parser, config, "Loading Parameters", sentinel)
 
     def extract(self, args):
         g = super().extract(args)
         g.source_path = os.path.abspath(g.source_path)
         return g
 
+
 class PipelineParams(ParamGroup):
-    def __init__(self, parser):
+    def __init__(self, parser, config):
         self.convert_SHs_python = False
         self.compute_cov3D_python = False
         self.debug = False
-        super().__init__(parser, "Pipeline Parameters")
+        super().__init__(parser, config, "Pipeline Parameters")
+
 
 class OptimizationParams(ParamGroup):
-    def __init__(self, parser):
+    def __init__(self, parser, config):
         self.iterations = 30_000
         self.position_lr_init = 0.00016
         self.position_lr_final = 0.0000016
@@ -77,6 +102,7 @@ class OptimizationParams(ParamGroup):
         self.position_lr_max_steps = 30_000
         self.feature_lr = 0.0025
         self.opacity_lr = 0.05
+        self.mask_lr = 0.05
         self.scaling_lr = 0.005
         self.rotation_lr = 0.001
         self.percent_dense = 0.01
@@ -86,10 +112,21 @@ class OptimizationParams(ParamGroup):
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
+        self.use_amp = False
         self.random_background = False
-        super().__init__(parser, "Optimization Parameters")
+        super().__init__(parser, config, "Optimization Parameters")
 
-def get_combined_args(parser : ArgumentParser):
+class PruneParams(ParamGroup):
+    def __init__(self, parser, config):
+        self.prune_iterations = [16_000, 24_000]
+        self.prune_percent = 0.5
+        self.v_pow = 0.1
+        self.prune_decay = 0.8
+        self.use_mask = False
+        self.mask_activation = "sigmoid"
+        super().__init__(parser, config, "Prune Parameters")
+
+def get_combined_args(parser: ArgumentParser):
     cmdlne_string = sys.argv[1:]
     cfgfile_string = "Namespace()"
     args_cmdline = parser.parse_args(cmdlne_string)
@@ -106,7 +143,7 @@ def get_combined_args(parser : ArgumentParser):
     args_cfgfile = eval(cfgfile_string)
 
     merged_dict = vars(args_cfgfile).copy()
-    for k,v in vars(args_cmdline).items():
+    for k, v in vars(args_cmdline).items():
         if v != None:
             merged_dict[k] = v
     return Namespace(**merged_dict)
