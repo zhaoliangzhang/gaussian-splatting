@@ -118,7 +118,7 @@ class OptimizationParams(ParamGroup):
 
 class PruneParams(ParamGroup):
     def __init__(self, parser, config):
-        self.prune_iterations = [16_000, 24_000]
+        self.prune_iterations = [25_000]
         self.prune_percent = 0.5
         self.v_pow = 0.1
         self.prune_decay = 0.8

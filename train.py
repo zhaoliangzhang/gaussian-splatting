@@ -11,10 +11,15 @@
 
 import os
 import torch
+import torchvision
+import torchvision.transforms.functional as tf
 from random import randint
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
 import sys
+from lpipsPyTorch import lpips
+from os import makedirs
+from PIL import Image
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 import uuid
@@ -24,16 +29,30 @@ from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams, PruneParams
 from collections import defaultdict
 import yaml
+from pathlib import Path
+import hashlib
+import wandb
+import json
+
+from render import render_sets
+from metrics import evaluate
+
+# try:
+#     from torch.utils.tensorboard import SummaryWriter
+#     TENSORBOARD_FOUND = True
+# except ImportError:
+#     TENSORBOARD_FOUND = False
 
 try:
-    from torch.utils.tensorboard import SummaryWriter
-    TENSORBOARD_FOUND = True
+    import wandb
+    WANDB_FOUND = True
 except ImportError:
-    TENSORBOARD_FOUND = False
+    WANDB_FOUND = False
 
 def training(dataset, opt, pipe, prune, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
-    tb_writer = prepare_output_and_logger(dataset)
+    # tb_writer = prepare_output_and_logger(dataset)
+    wandb_enabled = WANDB_FOUND and args.use_wandb
     gaussians = GaussianModel(dataset, prune)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
@@ -51,6 +70,7 @@ def training(dataset, opt, pipe, prune, testing_iterations, saving_iterations, c
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
+    net_training_time = 0
     for iteration in range(first_iter, opt.iterations + 1):        
         if network_gui.conn == None:
             network_gui.try_connect()
@@ -107,9 +127,17 @@ def training(dataset, opt, pipe, prune, testing_iterations, saving_iterations, c
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
+            
+            iter_time = iter_start.elapsed_time(iter_end)
+            net_training_time += iter_time
+            if prune.use_mask:
+                log_mask = torch.nn.Threshold(0.5, 0)(gaussians.get_mask)
+                sparsity = 1 - torch.count_nonzero(log_mask).cpu().detach().numpy()/torch.numel(log_mask)
+            else:
+                sparsity = None
 
             # Log and save
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, (iteration>opt.densify_until_iter) and prune.use_mask))
+            training_report(wandb_enabled, iteration, Ll1, loss, iter_start.elapsed_time(iter_end), net_training_time, scene, sparsity)
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
@@ -126,6 +154,13 @@ def training(dataset, opt, pipe, prune, testing_iterations, saving_iterations, c
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
+            
+            #Prune
+            if iteration in prune.prune_iterations:
+                if prune.use_mask:
+                    print("prune using mask at ", iteration)
+                    prune_mask = gaussians.get_mask < 0.5
+                    gaussians.prune_points(prune_mask.squeeze())
 
             # Optimizer step
             if iteration < opt.iterations:
@@ -135,65 +170,21 @@ def training(dataset, opt, pipe, prune, testing_iterations, saving_iterations, c
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+    
 
-def prepare_output_and_logger(args):    
-    if not args.model_path:
-        if os.getenv('OAR_JOB_ID'):
-            unique_str=os.getenv('OAR_JOB_ID')
-        else:
-            unique_str = str(uuid.uuid4())
-        args.model_path = os.path.join("./output/", unique_str[0:10])
-        
-    # Set up output folder
-    print("Output folder: {}".format(args.model_path))
-    os.makedirs(args.model_path, exist_ok = True)
-    with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
-        cfg_log_f.write(str(Namespace(**vars(args))))
+def training_report(wandb_enabled, iteration, Ll1, loss, 
+                    iter_time, elapsed, scene : Scene, sparsity):
 
-    # Create Tensorboard writer
-    tb_writer = None
-    if TENSORBOARD_FOUND:
-        tb_writer = SummaryWriter(args.model_path)
-    else:
-        print("Tensorboard not available: not logging progress")
-    return tb_writer
-
-def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
-    if tb_writer:
-        tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
-        tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
-        tb_writer.add_scalar('iter_time', elapsed, iteration)
-
-    # Report test and samples of training set
-    if iteration in testing_iterations:
-        torch.cuda.empty_cache()
-        validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
-                              {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
-
-        for config in validation_configs:
-            if config['cameras'] and len(config['cameras']) > 0:
-                l1_test = 0.0
-                psnr_test = 0.0
-                for idx, viewpoint in enumerate(config['cameras']):
-                    image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
-                    gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
-                    if tb_writer and (idx < 5):
-                        tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
-                        if iteration == testing_iterations[0]:
-                            tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
-                    l1_test += l1_loss(image, gt_image).mean().double()
-                    psnr_test += psnr(image, gt_image).mean().double()
-                psnr_test /= len(config['cameras'])
-                l1_test /= len(config['cameras'])          
-                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
-                if tb_writer:
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
-
-        if tb_writer:
-            tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
-            tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
-        torch.cuda.empty_cache()
+    if wandb_enabled:
+        wandb.log({"train_loss_patches/l1_loss": Ll1.item(), 
+                   "train_loss_patches/total_loss": loss.item(), 
+                   "num_points": scene.gaussians.get_xyz.shape[0],
+                   "iter_time": iter_time,
+                   "elapsed": elapsed,
+                   }, step=iteration)
+        if sparsity != None:
+            wandb.log({"sparsity": sparsity,
+                       }, step = iteration)
 
 if __name__ == "__main__":
     #Set up config file
@@ -217,10 +208,12 @@ if __name__ == "__main__":
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[30_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+    parser.add_argument("--skip_train", action="store_true")
+    parser.add_argument("--skip_test", action="store_true")
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
@@ -229,10 +222,39 @@ if __name__ == "__main__":
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
+    # Prepare wandb logger
+    lp_args = lp.extract(args)
+    op_args = op.extract(args)
+    pp_args = pp.extract(args)
+    pr_args = pr.extract(args)
+    id = hashlib.md5(lp_args.wandb_run_name.encode('utf-8')).hexdigest()
+    wandb.init(
+        project=lp_args.wandb_project,
+        name=lp_args.wandb_run_name,
+        entity=lp_args.wandb_entity,
+        group=lp_args.wandb_group,
+        config=args,
+        sync_tensorboard=False,
+        dir=lp_args.model_path,
+        mode=lp_args.wandb_mode,
+        id=id,
+        resume=True
+    )
+
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), pr.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    if not os.path.exists(lp_args.model_path):
+                    os.makedirs(lp_args.model_path)
+    training(lp_args, op_args, pp_args, pr.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
 
     # All done
     print("\nTraining complete.")
+
+    if not args.skip_test:
+        if os.path.exists(os.path.join(args.model_path,"results.json")) and not args.retest:
+            print("Testing complete at {}".format(args.model_path))
+        else:
+            render_sets(lp_args, op_args.iterations, pp_args, pr_args, args.skip_train, args.skip_test)
+
+    evaluate([lp_args.model_path])
