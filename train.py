@@ -108,6 +108,7 @@ def training(dataset, opt, pipe, prune, testing_iterations, saving_iterations, c
 
         if iteration == opt.densify_until_iter+1:
             gaussians.set_trainable_mask(opt)
+            gaussians.opacity_activation = torch.sigmoid
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg, (iteration>opt.densify_until_iter) and prune.use_mask)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
@@ -161,6 +162,8 @@ def training(dataset, opt, pipe, prune, testing_iterations, saving_iterations, c
                     print("prune using mask at ", iteration)
                     prune_mask = gaussians.get_mask < 0.5
                     gaussians.prune_points(prune_mask.squeeze())
+                    prune.use_mask = False
+                    gaussians.use_mask = False
 
             # Optimizer step
             if iteration < opt.iterations:
@@ -214,6 +217,7 @@ if __name__ == "__main__":
     parser.add_argument("--start_checkpoint", type=str, default = None)
     parser.add_argument("--skip_train", action="store_true")
     parser.add_argument("--skip_test", action="store_true")
+    parser.add_argument("--retest", action="store_true")
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
@@ -250,6 +254,8 @@ if __name__ == "__main__":
 
     # All done
     print("\nTraining complete.")
+
+    lp_args.opacity_activation = "sigmoid"
 
     if not args.skip_test:
         if os.path.exists(os.path.join(args.model_path,"results.json")) and not args.retest:

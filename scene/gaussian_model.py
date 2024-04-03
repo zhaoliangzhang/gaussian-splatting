@@ -36,7 +36,7 @@ class GaussianModel:
 
         self.covariance_activation = build_covariance_from_scaling_rotation
 
-        if dataset.opacity_activation == "gumble_sigmoid":
+        if dataset.opacity_activation == "gumbel_sigmoid":
             self.opacity_activation = _gumbel_sigmoid
         else:
             self.opacity_activation = torch.sigmoid
@@ -180,9 +180,6 @@ class GaussianModel:
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
         ]
 
-        # if self.use_mask:
-        #     l.append({'params': [self._mask], 'lr': training_args.rotation_lr, "name": "rotation"})
-
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
                                                     lr_final=training_args.position_lr_final*self.spatial_lr_scale,
@@ -204,8 +201,6 @@ class GaussianModel:
             l.append('f_dc_{}'.format(i))
         for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
             l.append('f_rest_{}'.format(i))
-        if self.use_mask:
-            l.append('mask')
         l.append('opacity')
         for i in range(self._scaling.shape[1]):
             l.append('scale_{}'.format(i))
@@ -227,12 +222,7 @@ class GaussianModel:
         dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        if self.use_mask:
-            self._mask = nn.Parameter(torch.ones(self._opacity.shape, device="cuda"), requires_grad=True)
-            masks = self._mask.detach().cpu().numpy()
-            attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, masks, scale, rotation), axis=1)
-        else:
-            attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
@@ -249,8 +239,8 @@ class GaussianModel:
                         np.asarray(plydata.elements[0]["y"]),
                         np.asarray(plydata.elements[0]["z"])),  axis=1)
         opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
-        if self.use_mask:
-            masks = np.asarray(plydata.elements[0]["mask"])[..., np.newaxis]
+        # if self.use_mask:
+        #     masks = np.asarray(plydata.elements[0]["mask"])[..., np.newaxis]
 
         features_dc = np.zeros((xyz.shape[0], 3, 1))
         features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
@@ -282,8 +272,6 @@ class GaussianModel:
         self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
-        if self.use_mask:
-            self._mask = nn.Parameter(torch.tensor(masks, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
 
@@ -433,6 +421,7 @@ class GaussianModel:
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
+            # big_points_ws = torch.logical_or(self.get_scaling.max(dim=1).values < 0.005 * extent, big_points_ws)
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
         self.prune_points(prune_mask)
 
@@ -449,3 +438,4 @@ class GaussianModel:
                 "lr": training_args.mask_lr,
                 "name": "mask",
             })
+        self.opacity_activation = torch.sigmoid
