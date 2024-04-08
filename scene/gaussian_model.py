@@ -21,6 +21,7 @@ from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 from utils.prune_utils import _gumbel_sigmoid
+import random
 
 class GaussianModel:
 
@@ -141,6 +142,14 @@ class GaussianModel:
 
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
         self.spatial_lr_scale = spatial_lr_scale
+        # length = pcd.points.shape[0]
+        # prune_num = 2*length//3
+        # position = random.sample(range(length),prune_num)
+        # # import pdb; pdb.set_trace()
+        # pcd = pcd._replace(points=np.delete(pcd.points, position, 0))
+        # pcd = pcd._replace(colors=np.delete(pcd.colors, position, 0))
+        # pcd = pcd._replace(normals=np.delete(pcd.normals, position, 0))
+        # pcd.help()
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()

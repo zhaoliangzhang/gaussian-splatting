@@ -13,11 +13,17 @@ import torch
 import math
 import numpy as np
 from typing import NamedTuple
+import random
 
 class BasicPointCloud(NamedTuple):
     points : np.array
     colors : np.array
     normals : np.array
+    
+    def help(self):
+        print("points:", self.points.shape)
+        print("colors:", self.colors.shape)
+        print("normals:", self.normals.shape)
 
 def geom_transform_points(points, transf_matrix):
     P, _ = points.shape

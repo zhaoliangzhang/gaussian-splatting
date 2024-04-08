@@ -51,7 +51,7 @@ except ImportError:
 
 def training(dataset, opt, pipe, prune, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
-    # tb_writer = prepare_output_and_logger(dataset)
+    prepare_output_and_logger(dataset)
     wandb_enabled = WANDB_FOUND and args.use_wandb
     gaussians = GaussianModel(dataset, prune)
     scene = Scene(dataset, gaussians)
@@ -174,6 +174,19 @@ def training(dataset, opt, pipe, prune, testing_iterations, saving_iterations, c
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
     
+def prepare_output_and_logger(args):    
+    if not args.model_path:
+        if os.getenv('OAR_JOB_ID'):
+            unique_str=os.getenv('OAR_JOB_ID')
+        else:
+            unique_str = str(uuid.uuid4())
+        args.model_path = os.path.join("./output/", unique_str[0:10])
+        
+    # Set up output folder
+    print("Output folder: {}".format(args.model_path))
+    os.makedirs(args.model_path, exist_ok = True)
+    with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
+        cfg_log_f.write(str(Namespace(**vars(args))))
 
 def training_report(wandb_enabled, iteration, Ll1, loss, 
                     iter_time, elapsed, scene : Scene, sparsity):

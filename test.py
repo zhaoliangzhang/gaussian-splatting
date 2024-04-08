@@ -17,4 +17,4 @@ t1 = benchmark.Timer(stmt='torch.sigmoid(x)',
                     )
 
 render_time1 = t1.timeit(100)
-print(render_time1.median)                    
+print(render_time1.median)
