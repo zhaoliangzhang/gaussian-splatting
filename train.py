@@ -37,6 +37,10 @@ import json
 from render import render_sets
 from metrics import evaluate
 
+from utils.general_utils import inverse_sigmoid
+from functools import partial
+from utils.prune_utils import _gumbel_sigmoid
+
 # try:
 #     from torch.utils.tensorboard import SummaryWriter
 #     TENSORBOARD_FOUND = True
@@ -170,6 +174,18 @@ def training(dataset, opt, pipe, prune, testing_iterations, saving_iterations, c
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
 
+            if opt.switch_iteration == iteration and opt.use_gumbel_in_finetune:
+                print('Switch to Gumbel Sigmoid at iter: ', iteration)
+                # gaussians.opacity_activation = torch.sigmoid
+                # gaussians.inverse_opacity_activation = inverse_sigmoid
+                # gaussians.opacity_activation = partial(_gumbel_sigmoid, temperature = dataset.gumbel_temperature)
+                gaussians.opacity_activation = _gumbel_sigmoid
+
+
+            if opt.use_sigmoid_final and iteration == opt.densify_until_iter:
+                gaussians.opacity_activation = torch.sigmoid
+                gaussians.inverse_opacity_activation = inverse_sigmoid
+                
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")

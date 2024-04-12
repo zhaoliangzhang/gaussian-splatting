@@ -69,7 +69,7 @@ class ModelParams(ParamGroup):
 
         self.use_wandb = True
         self.wandb_project = "lightgaussian"
-        self.wandb_entity = "zhaoliangzhang"
+        self.wandb_entity = "simonsong"
         self.wandb_run_name = "test-run"
         self.wandb_group = "baseline"
         self.wandb_mode = "online"
@@ -114,6 +114,9 @@ class OptimizationParams(ParamGroup):
         self.densify_grad_threshold = 0.0002
         self.use_amp = False
         self.random_background = False
+        self.use_gumbel_in_finetune = True
+        self.switch_iteration = 10_000
+        self.use_sigmoid_final = True
         super().__init__(parser, config, "Optimization Parameters")
 
 class PruneParams(ParamGroup):
